@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+# Never commit raw IDS traffic, model checkpoints, feature-level samples, or cached full datasets.
+data/**
+!data/.gitkeep
+runs/**
+!runs/.gitkeep
+reports/
+*.log

@@ -1,0 +1,99 @@
+# Run from repository root. Dataset files are NOT bundled. See docs/DATASETS.md
+run_dir: runs/{dataset_name}/origin_seed{origin_seed}
+reports_dir: reports
+training:
+  design: factorized
+  origin_seeds:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  comparison_seeds:
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  - 16
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  hidden_dims:
+  - 128
+  - 64
+  architecture_variants:
+  - - 32
+    - 16
+  - - 64
+    - 32
+  - - 96
+    - 48
+  - - 128
+    - 64
+  - - 160
+    - 80
+  - - 192
+    - 96
+  - - 256
+    - 128
+  activation: relu
+  activation_variants:
+  - relu
+  - tanh
+  - leaky_relu
+  subset_fractions:
+  - 0.75
+  - 0.5
+  epochs: 20
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  dropout: 0.2
+  patience: 5
+  device: auto
+dataset:
+  dataset: nf_ton_iot_v3
+  root: data/raw/nf_ton_iot_v3
+  split_seed: 42
+  test_split_seed: 42
+  sampling_seed: 42
+  validation_fraction: 0.2
+  test_fraction: 0.2
+  files:
+  - '**/*.csv'
+  split: random
+  label_candidates:
+  - Label
+  - label
+  binary_label: true
+  attack_type_candidates:
+  - Attack
+  - attack_cat
+  - attack_category
+  drop_columns:
+  - IPV4_SRC_ADDR
+  - IPV4_DST_ADDR
+  - IPV6_SRC_ADDR
+  - IPV6_DST_ADDR
+  - FLOW_ID
+  - Attack
+  - attack_cat
+  - attack_category
+  max_rows_per_file: 250000

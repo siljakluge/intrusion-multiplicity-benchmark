@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the corresponding paper and the original benchmark dataset publications."
+title: "Intrusion Detection Model Multiplicity Audit"
+type: software
+authors:
+  - family-names: Kluge
+    given-names: Silja
+version: 0.1.0
+keywords:
+  - intrusion detection
+  - model multiplicity
+  - explainable artificial intelligence
+  - SHAP

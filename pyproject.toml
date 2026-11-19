@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ids-multiplicity-audit"
+version = "0.1.0"
+description = "Reproducible predictive/explanatory model multiplicity audits on intrusion detection benchmarks"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["intrusion-detection", "model-multiplicity", "Rashomon-set", "SHAP", "cyber-defense"]
+dependencies = [
+  "numpy>=1.26,<3", "pandas>=2.1,<3", "scikit-learn>=1.4,<2",
+  "scipy>=1.11,<2", "torch>=2.2,<3", "shap>=0.45,<1",
+  "joblib>=1.3,<2", "PyYAML>=6.0,<7", "tqdm>=4.66,<5",
+  "matplotlib>=3.8,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+idsmultiplicity = "idsmultiplicity.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
