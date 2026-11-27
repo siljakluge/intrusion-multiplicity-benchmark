@@ -112,6 +112,36 @@ def _batches(x, y=None, size=256, shuffle=False, seed=0):
                       generator=torch.Generator().manual_seed(seed))
 
 
+def _gpu_batches(x: torch.Tensor, y: torch.Tensor | None = None, size: int = 256,
+                 shuffle: bool = False, seed: int = 0):
+    """Batches on GPU with an explicit CPU-side seeded permutation.
+
+    This intentionally uses a different RNG/permutation implementation to
+    DataLoader: DO NOT mix checkpoints from the two backends within one run.
+    """
+    if size < 1:
+        raise ValueError("batch_size must be positive")
+    order = None
+    if shuffle:
+        generator = torch.Generator().manual_seed(int(seed))
+        order = torch.randperm(len(x), generator=generator).to(x.device)
+    for start in range(0, len(x), size):
+        selector = order[start:start + size] if shuffle else slice(start, start + size)
+        if y is None:
+            yield (x[selector],)
+        else:
+            yield x[selector], y[selector]
+
+
+def _gpu_predict(model: nn.Module, x: torch.Tensor, batch_size: int):
+    """Inference on device, with one final transfer to CPU for saved scores."""
+    model.eval()
+    with torch.no_grad():
+        parts = [torch.softmax(model(chunk), dim=1) for chunk in x.split(batch_size)]
+        probs = torch.cat(parts).cpu().numpy()
+    return probs.argmax(axis=1), probs
+
+
 def predict(model: nn.Module, x: np.ndarray, device: torch.device, batch_size: int = 2048):
     model.eval()
     pieces = []
@@ -128,11 +158,22 @@ def _metrics(y, pred, probs, prefix=""):
             prefix+"log_loss": float(log_loss(y, probs, labels=[0,1]))}
 
 
-def train_model(data, spec: dict, training: dict, run_dir: Path):
+def train_model(data, spec: dict, training: dict, run_dir: Path, gpu_data=None):
     set_seed(spec["train_seed"])
     idx = _subset(data.y_train, spec)
-    x, y = data.x_train[idx], data.y_train[idx]
     device = device_from_name(training.get("device", "auto"))
+    fast_gpu = bool(training.get("gpu_resident_batches", False))
+    if fast_gpu:
+        if device.type != "cuda":
+            raise RuntimeError("gpu_resident_batches requires a CUDA device")
+        if gpu_data is None:
+            gpu_data = {name: torch.from_numpy(getattr(data, name)).to(device)
+                        for name in ("x_train", "y_train", "x_val", "y_val", "x_test")}
+        idx_device = torch.as_tensor(idx, dtype=torch.long, device=device)
+        x_gpu = gpu_data["x_train"].index_select(0, idx_device)
+        y_gpu = gpu_data["y_train"].index_select(0, idx_device)
+    else:
+        x, y = data.x_train[idx], data.y_train[idx]
     model = MLPClassifier(data.x_train.shape[1], 2, spec["hidden_dims"], spec["activation"], float(training.get("dropout", .2))).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(training.get("learning_rate", .001)),
                                   weight_decay=float(training.get("weight_decay", .0001)))
@@ -141,19 +182,32 @@ def train_model(data, spec: dict, training: dict, run_dir: Path):
     size = int(training.get("batch_size", 256))
     for epoch in range(int(training.get("epochs", 20))):
         model.train()
-        for xb,yb in _batches(x,y,size,True, spec["train_seed"] + epoch):
-            xb,yb = xb.to(device),yb.to(device)
+        if fast_gpu:
+            train_batches = _gpu_batches(x_gpu, y_gpu, size, True, spec["train_seed"] + epoch)
+        else:
+            train_batches = _batches(x, y, size, True, spec["train_seed"] + epoch)
+        for xb, yb in train_batches:
+            if not fast_gpu:
+                xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(xb),yb)
+            loss = criterion(model(xb), yb)
             loss.backward()
             optimizer.step()
         model.eval()
-        val_loss_sum = 0.
-        with torch.no_grad():
-            for xb,yb in _batches(data.x_val,data.y_val,size):
-                xb,yb = xb.to(device),yb.to(device)
-                val_loss_sum += criterion(model(xb),yb).item() * len(yb)
-        val_loss = val_loss_sum/len(data.y_val)
+        if fast_gpu:
+            # Avoid synchronizing CUDA with the CPU for each validation batch.
+            val_loss_sum = torch.zeros((), device=device)
+            with torch.no_grad():
+                for xb, yb in _gpu_batches(gpu_data["x_val"], gpu_data["y_val"], size):
+                    val_loss_sum += criterion(model(xb), yb) * len(yb)
+            val_loss = float((val_loss_sum / len(gpu_data["y_val"])).item())
+        else:
+            val_loss_sum = 0.
+            with torch.no_grad():
+                for xb, yb in _batches(data.x_val, data.y_val, size):
+                    xb, yb = xb.to(device), yb.to(device)
+                    val_loss_sum += criterion(model(xb), yb).item() * len(yb)
+            val_loss = val_loss_sum / len(data.y_val)
         if val_loss < best - 1e-9:
             best, state, stale = val_loss, {k:v.detach().cpu().clone() for k,v in model.state_dict().items()}, 0
         else:
@@ -163,8 +217,12 @@ def train_model(data, spec: dict, training: dict, run_dir: Path):
     if state is None:
         raise RuntimeError("No checkpoint found")
     model.load_state_dict(state)
-    val_pred, val_prob = predict(model, data.x_val, device, size)
-    test_pred, test_prob = predict(model, data.x_test, device, size)
+    if fast_gpu:
+        val_pred, val_prob = _gpu_predict(model, gpu_data["x_val"], size)
+        test_pred, test_prob = _gpu_predict(model, gpu_data["x_test"], size)
+    else:
+        val_pred, val_prob = predict(model, data.x_val, device, size)
+        test_pred, test_prob = predict(model, data.x_test, device, size)
     checkpoint_path = run_dir / "models" / f"{spec['model_id']}.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({"model_state_dict":state, "input_dim":data.x_train.shape[1],"output_dim":2,
@@ -226,6 +284,15 @@ def run_training(cfg: dict, origin: int, *, max_models: int | None = None) -> Pa
                             cwd=Path(__file__).resolve().parent, check=False)
     env["git_commit"] = commit.stdout.strip() if commit.returncode == 0 else None
     (run_dir / "environment.json").write_text(json.dumps(env, indent=2))
+    gpu_data = None
+    if cfg["training"].get("gpu_resident_batches", False):
+        device = device_from_name(cfg["training"].get("device", "auto"))
+        if device.type != "cuda":
+            raise RuntimeError("gpu_resident_batches requires CUDA-enabled PyTorch")
+        # Reuse these GPU buffers for all 63 candidates of an origin.
+        gpu_data = {name: torch.from_numpy(getattr(data, name)).to(device)
+                    for name in ("x_train", "y_train", "x_val", "y_val", "x_test")}
+
     plan = plan_models(cfg["training"], origin)
     pd.DataFrame([{**row, "hidden_dims": str(row["hidden_dims"])} for row in plan]).to_csv(run_dir/"training_plan.csv",index=False)
     to_run = plan[:max_models] if max_models else plan
@@ -237,7 +304,7 @@ def run_training(cfg: dict, origin: int, *, max_models: int | None = None) -> Pa
         if all(p.exists() for p in [result_path,prediction_file,checkpoint_file]):
             result = json.loads(result_path.read_text())
         else:
-            result = train_model(data,spec,cfg["training"],run_dir)
+            result = train_model(data,spec,cfg["training"],run_dir,gpu_data=gpu_data)
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(json.dumps(result, indent=2))
         results.append(result)
